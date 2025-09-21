@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+history.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.log
+
+# Virtual envs
+.venv/
+venv/
+env/
+points_reader_env/
+
+# Local model snapshots & caches (huge)
+POINTS-Reader-local/
+
+# Runtime work artifacts
+work/
+
+# Large/sensitive samples
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.bmp
+
+# Editors/OS miscellany
+.idea/
+.vscode/
