@@ -202,7 +202,7 @@
             <h2 class="text-2xl font-semibold text-gray-800">Processing Results</h2>
             
             <template x-for="result in results" :key="result.id">
-                <div class="bg-white rounded-lg shadow-lg p-6">
+                <div class="bg-white rounded-lg shadow-lg p-6" :id="`result-${result.id}`">
                     <div class="flex justify-between items-start mb-4">
                         <div>
                             <h3 class="text-lg font-semibold text-gray-800" x-text="result.filename"></h3>
@@ -242,6 +242,8 @@
                 processingStatus: '',
                 results: [],
                 driveFiles: [],
+                currentJobId: null,  // Track current job
+                pollingInterval: null,  // Track polling interval
 
                 init() {
                     this.checkStatus();
@@ -287,11 +289,11 @@
 
                         const data = await response.json();
                         if (data.job_id) {
-                            this.pollJobStatus(data.job_id);
+                            this.startPolling(data.job_id);
                         }
                     } catch (error) {
                         console.error('Upload failed:', error);
-                        this.processing = false;
+                        this.resetProcessing();
                     }
                 },
 
@@ -346,57 +348,95 @@
 
                         const data = await response.json();
                         if (data.job_id) {
-                            this.pollJobStatus(data.job_id);
+                            this.startPolling(data.job_id);
                         }
                     } catch (error) {
                         console.error('Processing failed:', error);
-                        this.processing = false;
+                        this.resetProcessing();
                     }
                 },
 
-                async pollJobStatus(jobId) {
-                    const interval = setInterval(async () => {
-                        try {
-                            const response = await fetch(`/job-status/${jobId}`);
-                            
-                            if (!response.ok) {
-                                throw new Error(`HTTP error! status: ${response.status}`);
-                            }
-                            
-                            const data = await response.json();
-
-                            this.progress = data.progress || 0;
-                            this.processingStatus = data.status || 'Processing...';
-
-                            if (data.status === 'completed') {
-                                clearInterval(interval);
-                                this.processing = false;
-                                this.processingStatus = '';
-                                this.addResult(data);
-                            } else if (data.status === 'error') {
-                                clearInterval(interval);
-                                this.processing = false;
-                                this.processingStatus = '';
-                                alert(`Processing failed: ${data.error}`);
-                            }
-                        } catch (error) {
-                            console.error('Failed to check job status:', error);
-                            clearInterval(interval);
-                            this.processing = false;
-                            this.processingStatus = '';
-                            alert('Failed to check processing status: ' + error.message);
-                        }
+                startPolling(jobId) {
+                    // Clear any existing polling
+                    this.stopPolling();
+                    
+                    this.currentJobId = jobId;
+                    console.log(`Starting polling for job: ${jobId}`);
+                    
+                    this.pollingInterval = setInterval(async () => {
+                        await this.checkJobStatus(jobId);
                     }, 1000);
                 },
 
+                stopPolling() {
+                    if (this.pollingInterval) {
+                        console.log(`Stopping polling for job: ${this.currentJobId}`);
+                        clearInterval(this.pollingInterval);
+                        this.pollingInterval = null;
+                        this.currentJobId = null;
+                    }
+                },
+
+                resetProcessing() {
+                    this.processing = false;
+                    this.progress = 0;
+                    this.processingStatus = '';
+                    this.stopPolling();
+                },
+
+                async checkJobStatus(jobId) {
+                    try {
+                        const response = await fetch(`/job-status/${jobId}`);
+                        
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+
+                        this.progress = data.progress || 0;
+                        this.processingStatus = data.status || 'Processing...';
+
+                        if (data.status === 'completed') {
+                            console.log(`Job ${jobId} completed successfully`);
+                            this.stopPolling();
+                            this.resetProcessing();
+                            this.addResult(data);
+                        } else if (data.status === 'error') {
+                            console.log(`Job ${jobId} failed with error: ${data.error}`);
+                            this.stopPolling();
+                            this.resetProcessing();
+                            alert(`Processing failed: ${data.error}`);
+                        }
+                    } catch (error) {
+                        console.error('Failed to check job status:', error);
+                        this.stopPolling();
+                        this.resetProcessing();
+                        alert('Failed to check processing status: ' + error.message);
+                    }
+                },
+
                 addResult(data) {
-                    this.results.unshift({
-                        id: Date.now(),
-                        filename: data.filename,
-                        text: data.result,
-                        timestamp: new Date().toLocaleString(),
-                        savedFileId: data.saved_file_id
-                    });
+                    const resultId = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                    
+                    // Check if result already exists to prevent duplicates
+                    const exists = this.results.some(result => 
+                        result.filename === data.filename && 
+                        result.text === data.result
+                    );
+                    
+                    if (!exists) {
+                        this.results.unshift({
+                            id: resultId,
+                            filename: data.filename,
+                            text: data.result,
+                            timestamp: new Date().toLocaleString(),
+                            savedFileId: data.saved_file_id
+                        });
+                        console.log(`Added result for ${data.filename}`);
+                    } else {
+                        console.log(`Result for ${data.filename} already exists, skipping duplicate`);
+                    }
                 },
 
                 formatFileSize(bytes) {

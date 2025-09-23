@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Complete Invoice OCR Web Application
-Integrates debug learnings with full Google Drive functionality
+Fixed Complete Invoice OCR Web Application
+Uses isolated processing wrapper to prevent file conflicts
 """
 
 import asyncio
@@ -23,8 +23,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.requests import Request
 import uvicorn
 
-# Your POINTS-Reader integration (with fixed imports)
-from next_steps_guide import load_local_model, patch_pointsv15_for_mps, download_local_model, pdf_to_clean_pngs, prep_existing_png
+# Import the web-specific wrapper
+from web_wrapper_service import web_ocr
 
 # Google Drive integration
 from googleapiclient.discovery import build
@@ -40,31 +40,11 @@ logger = logging.getLogger(__name__)
 # Google Drive API scopes
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
-class InvoiceOCRService:
-    """Core service that handles OCR processing and Google Drive operations"""
+class GoogleDriveService:
+    """Handles Google Drive operations separately from OCR processing"""
     
     def __init__(self):
         self.drive_service = None
-        self.model = None
-        self.tokenizer = None
-        self.image_processor = None
-        self.model_loaded = False
-        
-    def initialize_model_sync(self):
-        """Initialize the local POINTS-Reader model synchronously"""
-        if self.model_loaded:
-            return
-            
-        try:
-            logger.info("=== INITIALIZING POINTS-READER MODEL ===")
-            model_dir = download_local_model(Path("POINTS-Reader-local"))
-            patch_pointsv15_for_mps(model_dir)
-            self.model, self.tokenizer, self.image_processor = load_local_model(Path("POINTS-Reader-local"))
-            self.model_loaded = True
-            logger.info("=== MODEL INITIALIZATION COMPLETE ===")
-        except Exception as e:
-            logger.error(f"Failed to initialize model: {e}")
-            raise
     
     async def initialize_google_drive(self, credentials_path: str):
         """Initialize Google Drive API connection"""
@@ -86,63 +66,6 @@ class InvoiceOCRService:
         
         self.drive_service = build('drive', 'v3', credentials=creds)
         logger.info("Google Drive API initialized")
-    
-    async def process_image(self, image_path: str, custom_prompt: str = None) -> str:
-        """Process an image with POINTS-Reader OCR using your exact next_steps_guide functions"""
-        if not self.model_loaded:
-            raise HTTPException(status_code=503, detail="Model not loaded")
-        
-        prompt = custom_prompt or "Extract all text from this image. Return tables in HTML format and other text in Markdown format."
-        
-        # Convert path to Path object
-        image_path_obj = Path(image_path)
-        
-        # Use your exact function signatures from next_steps_guide.py
-        work_root = Path("work")
-        pages_root = work_root / "pages"
-        pages_root.mkdir(parents=True, exist_ok=True)
-        
-        stem = image_path_obj.stem
-        
-        try:
-            if image_path_obj.suffix.lower() in {'.png', '.jpg', '.jpeg'}:
-                # For images: prep_existing_png(png_path: Path, pages_root: Path, stem: str) -> List[Path]
-                processed_images = prep_existing_png(image_path_obj, pages_root, stem)
-            else:
-                # For PDFs: pdf_to_clean_pngs(pdf_path: Path, pages_root: Path, stem: str, dpi: int = 300, max_pages: Optional[int] = None) -> List[Path]
-                processed_images = pdf_to_clean_pngs(image_path_obj, pages_root, stem, dpi=300, max_pages=None)
-            
-            if not processed_images:
-                raise HTTPException(status_code=400, detail="No images could be processed from the file")
-            
-            logger.info(f"Processed {len(processed_images)} images from {image_path_obj.name}")
-            
-            # Process only the first image to avoid duplicates
-            first_image = processed_images[0]
-            
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": str(first_image)},
-                    {"type": "text", "text": prompt}
-                ]
-            }]
-            
-            import torch
-            with torch.inference_mode():
-                result = self.model.chat(
-                    messages, 
-                    self.tokenizer, 
-                    self.image_processor, 
-                    {"max_new_tokens": 2048, "temperature": 0.0}
-                )
-            
-            logger.info("OCR processing completed for single image")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error processing {image_path_obj.name}: {e}")
-            raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
     
     async def get_drive_pdfs(self, folder_name: str = None) -> List[Dict]:
         """Get PDF files from Google Drive"""
@@ -231,14 +154,14 @@ class InvoiceOCRService:
         finally:
             os.unlink(tmp_path)
 
-# Initialize the service
-ocr_service = InvoiceOCRService()
+# Initialize services
+drive_service = GoogleDriveService()
 
 # Create FastAPI app
 app = FastAPI(
-    title="Invoice OCR Web App", 
-    description="Process invoices with POINTS-Reader OCR",
-    version="1.0.0"
+    title="Invoice OCR Web App (Fixed)", 
+    description="Process invoices with isolated POINTS-Reader OCR",
+    version="2.0.0"
 )
 
 # Create directories
@@ -252,28 +175,23 @@ for directory in [templates_dir, static_dir, uploads_dir]:
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Global state for jobs
+# Global state for jobs with better status tracking
 processing_jobs = {}
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize model on startup"""
-    logger.info("=== STARTING INVOICE OCR WEB APPLICATION ===")
-    try:
-        # Initialize model synchronously on startup
-        ocr_service.initialize_model_sync()
-        logger.info("Model initialization completed successfully!")
-    except Exception as e:
-        logger.error(f"Failed to initialize model on startup: {e}")
-        logger.info("Model will be loaded on first use instead")
+    """Model is already initialized in web_ocr wrapper"""
+    logger.info("=== STARTING FIXED INVOICE OCR WEB APPLICATION ===")
+    logger.info("Model pre-loaded via WebOCRWrapper")
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Main web interface"""
+    model_info = web_ocr.get_model_info()
     return templates.TemplateResponse("index.html", {
         "request": request,
-        "model_loaded": ocr_service.model_loaded,
-        "drive_connected": ocr_service.drive_service is not None
+        "model_loaded": model_info["model_loaded"],
+        "drive_connected": drive_service.drive_service is not None
     })
 
 @app.post("/upload-image")
@@ -282,7 +200,7 @@ async def upload_image(
     file: UploadFile = File(...),
     custom_prompt: str = Form("")
 ):
-    """Upload and process a single image"""
+    """Upload and process a single image with isolated processing"""
     # Validate file type
     allowed_extensions = {'.png', '.jpg', '.jpeg', '.pdf'}
     file_ext = Path(file.filename or "").suffix.lower()
@@ -295,9 +213,13 @@ async def upload_image(
     
     # Create unique job ID
     job_id = str(uuid.uuid4())
-    processing_jobs[job_id] = {"status": "processing", "progress": 0}
+    processing_jobs[job_id] = {
+        "status": f"File uploaded: {file.filename}",
+        "progress": 5,
+        "filename": file.filename
+    }
     
-    # Save uploaded file
+    # Save uploaded file with job ID to prevent conflicts
     file_path = uploads_dir / f"{job_id}_{file.filename}"
     
     try:
@@ -305,7 +227,9 @@ async def upload_image(
             content = await file.read()
             buffer.write(content)
         
-        # Process in background
+        logger.info(f"Saved upload: {file_path}")
+        
+        # Process in background with isolated processing
         background_tasks.add_task(
             process_file_background, 
             job_id, 
@@ -323,7 +247,7 @@ async def upload_image(
 
 @app.get("/job-status/{job_id}")
 async def job_status(job_id: str):
-    """Check processing job status"""
+    """Check processing job status with detailed updates"""
     if job_id not in processing_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     
@@ -342,7 +266,7 @@ async def setup_google_drive(credentials: UploadFile = File(...)):
             content = await credentials.read()
             buffer.write(content)
         
-        await ocr_service.initialize_google_drive(creds_path)
+        await drive_service.initialize_google_drive(creds_path)
         return {"status": "success", "message": "Google Drive connected successfully"}
         
     except Exception as e:
@@ -354,7 +278,7 @@ async def setup_google_drive(credentials: UploadFile = File(...)):
 async def list_drive_files(folder_name: str = None):
     """List PDF files from Google Drive"""
     try:
-        files = await ocr_service.get_drive_pdfs(folder_name)
+        files = await drive_service.get_drive_pdfs(folder_name)
         return {"files": files}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -368,7 +292,11 @@ async def process_drive_file(
 ):
     """Process a file from Google Drive"""
     job_id = str(uuid.uuid4())
-    processing_jobs[job_id] = {"status": "processing", "progress": 0}
+    processing_jobs[job_id] = {
+        "status": f"Starting Google Drive download: {file_name}",
+        "progress": 5,
+        "filename": file_name
+    }
     
     background_tasks.add_task(
         process_drive_file_background, 
@@ -381,33 +309,46 @@ async def process_drive_file(
     return {"job_id": job_id, "status": "processing"}
 
 async def process_file_background(job_id: str, file_path: Path, custom_prompt: str, original_filename: str):
-    """Background task to process uploaded file"""
+    """Background task with isolated processing and detailed status updates"""
     try:
-        processing_jobs[job_id]["progress"] = 10
-        processing_jobs[job_id]["status"] = f"File uploaded: {original_filename}"
-        logger.info(f"Starting processing for job {job_id}: {original_filename}")
+        processing_jobs[job_id].update({
+            "status": f"Preparing to process: {original_filename}",
+            "progress": 15
+        })
         
-        processing_jobs[job_id]["progress"] = 25
-        processing_jobs[job_id]["status"] = "Preparing image for OCR..."
+        # Use the isolated wrapper for processing
+        processing_jobs[job_id].update({
+            "status": "Converting and processing with OCR...",
+            "progress": 30
+        })
         
-        result = await ocr_service.process_image(str(file_path), custom_prompt)
+        # Call the isolated wrapper
+        result_data = web_ocr.process_single_file(
+            file_path=file_path,
+            custom_prompt=custom_prompt,
+            job_id=job_id
+        )
         
-        processing_jobs[job_id]["progress"] = 90
-        processing_jobs[job_id]["status"] = "Finalizing..."
+        processing_jobs[job_id].update({
+            "status": "OCR processing completed",
+            "progress": 90
+        })
         
         # Clean up uploaded file
         if file_path.exists():
             file_path.unlink()
             logger.info(f"Cleaned up uploaded file: {file_path}")
         
+        # Update with final results
         processing_jobs[job_id] = {
             "status": "completed",
             "progress": 100,
-            "result": result,
-            "filename": original_filename
+            "result": result_data["result"],
+            "filename": original_filename,
+            "pages_processed": result_data["pages_processed"]
         }
         
-        logger.info(f"Processing completed for job {job_id}")
+        logger.info(f"Processing completed successfully for job {job_id}")
         
     except Exception as e:
         logger.error(f"Processing failed for job {job_id}: {e}")
@@ -422,50 +363,73 @@ async def process_file_background(job_id: str, file_path: Path, custom_prompt: s
         processing_jobs[job_id] = {
             "status": "error",
             "progress": 0,
-            "error": str(e)
+            "error": str(e),
+            "filename": original_filename
         }
 
 async def process_drive_file_background(job_id: str, file_id: str, file_name: str, custom_prompt: str):
-    """Background task to process Google Drive file"""
+    """Background task for Google Drive files with isolated processing"""
     temp_path = None
     
     try:
-        processing_jobs[job_id]["progress"] = 10
-        processing_jobs[job_id]["status"] = "Downloading from Google Drive..."
+        processing_jobs[job_id].update({
+            "status": f"Downloading from Google Drive: {file_name}",
+            "progress": 10
+        })
         
-        file_content = await ocr_service.download_drive_file(file_id)
+        # Download from Google Drive
+        file_content = await drive_service.download_drive_file(file_id)
         
-        processing_jobs[job_id]["progress"] = 30
-        processing_jobs[job_id]["status"] = "Converting file..."
+        processing_jobs[job_id].update({
+            "status": "File downloaded, preparing for OCR...",
+            "progress": 25
+        })
         
-        temp_path = uploads_dir / f"temp_{job_id}_{file_name}"
+        # Save temporarily with job-specific name
+        temp_path = uploads_dir / f"drive_{job_id}_{file_name}"
         with open(temp_path, 'wb') as f:
             f.write(file_content)
         
-        processing_jobs[job_id]["progress"] = 50
-        processing_jobs[job_id]["status"] = "Processing with OCR..."
+        processing_jobs[job_id].update({
+            "status": "Processing with OCR...",
+            "progress": 40
+        })
         
-        result = await ocr_service.process_image(str(temp_path), custom_prompt)
+        # Use isolated wrapper for processing
+        result_data = web_ocr.process_single_file(
+            file_path=temp_path,
+            custom_prompt=custom_prompt,
+            job_id=job_id
+        )
         
-        processing_jobs[job_id]["progress"] = 90
-        processing_jobs[job_id]["status"] = "Saving to Google Drive..."
+        processing_jobs[job_id].update({
+            "status": "Saving results to Google Drive...",
+            "progress": 80
+        })
         
-        saved_file_id = await ocr_service.save_text_to_drive(result, file_name)
+        # Save back to Google Drive
+        saved_file_id = await drive_service.save_text_to_drive(result_data["result"], file_name)
         
+        # Clean up temp file
         if temp_path and temp_path.exists():
             temp_path.unlink()
+            logger.info(f"Cleaned up temp file: {temp_path}")
         
         processing_jobs[job_id] = {
             "status": "completed",
             "progress": 100,
-            "result": result,
+            "result": result_data["result"],
             "filename": file_name,
-            "saved_file_id": saved_file_id
+            "saved_file_id": saved_file_id,
+            "pages_processed": result_data["pages_processed"]
         }
+        
+        logger.info(f"Drive processing completed successfully for job {job_id}")
         
     except Exception as e:
         logger.error(f"Drive processing failed for job {job_id}: {e}")
         
+        # Clean up on error
         if temp_path and temp_path.exists():
             try:
                 temp_path.unlink()
@@ -475,23 +439,32 @@ async def process_drive_file_background(job_id: str, file_id: str, file_name: st
         processing_jobs[job_id] = {
             "status": "error",
             "progress": 0,
-            "error": str(e)
+            "error": str(e),
+            "filename": file_name
         }
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check with model status"""
+    model_info = web_ocr.get_model_info()
     return {
         "status": "healthy",
-        "model_loaded": ocr_service.model_loaded,
-        "drive_connected": ocr_service.drive_service is not None,
-        "version": "1.0.0"
+        "model_loaded": model_info["model_loaded"],
+        "device": model_info["device"],
+        "drive_connected": drive_service.drive_service is not None,
+        "version": "2.0.0 (Fixed)"
     }
 
+@app.post("/cleanup")
+async def cleanup_old_jobs():
+    """Manual cleanup endpoint for maintenance"""
+    web_ocr.cleanup_old_jobs(max_age_hours=24)
+    return {"status": "cleanup completed"}
+
 if __name__ == "__main__":
-    print("🚀 Starting Invoice OCR Web Application")
+    print("🚀 Starting Fixed Invoice OCR Web Application")
     print("📱 Web interface: http://localhost:8000")
+    print("🔧 Using isolated processing to prevent file conflicts")
     print("📋 API docs: http://localhost:8000/docs")
-    print("💡 Model loads on startup - wait for 'Model initialization completed' message")
     
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)

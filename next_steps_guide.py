@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-"""
 ================================================================================
 POINTS-Reader on Mac (MPS) — End-to-End Runner with Batch Mode & Safe Re-runs
 ================================================================================
@@ -140,9 +139,6 @@ CHANGELOG (highlights from this build)
 - Added `--debug` image mode/size logging to diagnose blank outputs.
 
 ================================================================================
-"""
-
-(… header unchanged from your commented version …)
 """
 
 import os, re, sys, gc, json, hashlib, shutil, argparse
