@@ -19,6 +19,7 @@ POINTS-Reader-local/
 
 # Runtime work artifacts
 work/
+web_work/
 
 # Large/sensitive samples
 *.pdf
@@ -32,4 +33,7 @@ work/
 .idea/
 .vscode/
 
-web_work/
+# Sensitive files
+token.json
+google_credentials.json
+*.secret
